@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using Content.Shared._ES.Mind;
 using Content.Shared._ES.Objectives.Components;
 using Content.Shared.EntityTable;
 using Content.Shared.EntityTable.EntitySelectors;
@@ -33,6 +34,9 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
 
         SubscribeLocalEvent<ESObjectiveHolderComponent, MindGotAddedEvent>(OnMindGotAdded);
         SubscribeLocalEvent<ESObjectiveHolderComponent, MindGotRemovedEvent>(OnMindGotRemoved);
+
+        SubscribeLocalEvent<ESObjectiveHolderComponent, ESMindPlayerAttachedEvent>(OnPlayerAttached);
+        SubscribeLocalEvent<ESObjectiveHolderComponent, ESMindPlayerDetachedEvent>(OnPlayerDetached);
     }
 
     private void OnMindGotAdded(Entity<ESObjectiveHolderComponent> ent, ref MindGotAddedEvent args)
@@ -48,6 +52,22 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
         foreach (var objective in GetObjectives(ent.AsNullable()))
         {
             RaiseLocalEvent(objective, args);
+        }
+    }
+
+    private void OnPlayerAttached(Entity<ESObjectiveHolderComponent> ent, ref ESMindPlayerAttachedEvent args)
+    {
+        foreach (var objective in GetObjectives(ent.AsNullable()))
+        {
+            _pvsOverride.AddSessionOverride(objective, args.Player);
+        }
+    }
+
+    private void OnPlayerDetached(Entity<ESObjectiveHolderComponent> ent, ref ESMindPlayerDetachedEvent args)
+    {
+        foreach (var objective in GetObjectives(ent.AsNullable()))
+        {
+            _pvsOverride.RemoveSessionOverride(objective, args.Player);
         }
     }
 
@@ -78,6 +98,18 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
     }
 
     /// <summary>
+    /// Refreshes objective progress for all objectives with component <see cref="T"/>
+    /// </summary>
+    [PublicAPI]
+    public void RefreshObjectiveProgress<T>() where T : Component
+    {
+        foreach (var objective in GetObjectives<T>())
+        {
+            RefreshObjectiveProgress((objective.Owner, objective.Comp2));
+        }
+    }
+
+    /// <summary>
     /// Gets the cached progress of an objective on [0, 1]
     /// If you need to update the progress, use <see cref="RefreshObjectiveProgress"/>
     /// </summary>
@@ -105,7 +137,11 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
         return ent.Comp.Icon ?? SpriteSpecifier.Invalid;
     }
 
-    public void RefreshObjectives(Entity<ESObjectiveHolderComponent?> ent)
+    /// <summary>
+    /// Re-generates the list of objectives an entity should have, adding all new objectives and removing ones that should no longer be there,
+    /// e.g. as a result of troupe or mask changes.
+    /// </summary>
+    public void RegenerateObjectiveList(Entity<ESObjectiveHolderComponent?> ent)
     {
         if (!Resolve(ent, ref ent.Comp, false))
             return;
@@ -186,14 +222,15 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
     /// <summary>
     /// Returns all objectives which have a given component
     /// </summary>
-    public List<Entity<T>> GetObjectives<T>() where T : Component
+    [PublicAPI]
+    public List<Entity<T, ESObjectiveComponent>> GetObjectives<T>() where T : Component
     {
         var query = EntityQueryEnumerator<T, ESObjectiveComponent>();
 
-        var objectives = new List<Entity<T>>();
-        while (query.MoveNext(out var uid, out var comp, out _))
+        var objectives = new List<Entity<T, ESObjectiveComponent>>();
+        while (query.MoveNext(out var uid, out var comp, out var objective))
         {
-            objectives.Add((uid, comp));
+            objectives.Add((uid, comp, objective));
         }
 
         return objectives;
@@ -277,7 +314,7 @@ public abstract partial class ESSharedObjectiveSystem : EntitySystem
         RaiseLocalEvent(objectiveUid, ref ev);
 
         ent.Comp.OwnedObjectives.Add(objective.Value);
-        RefreshObjectives(ent);
+        RegenerateObjectiveList(ent);
         RefreshObjectiveProgress(objective.Value.AsNullable());
         return true;
     }
